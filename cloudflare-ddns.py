@@ -1,194 +1,206 @@
-#!/usr/bin/env python
-#
-# CloudFlare DDNS script.
-#
-# usage:
-#   cloudflare-ddns.py --help
-#
-# See README for details
-
+#! /usr/bin/env python
 import requests
-import json
 import yaml
-import os
-import sys
+from os import path
+from sys import exit
 import logging
 import argparse
 from subprocess import Popen, PIPE
 
-# CLI usage
-parser = argparse.ArgumentParser( 'cloudflare-ddns.py' )
-parser.add_argument( '-k',            dest="cf_api_key", help="Cloudflare API key" )
-parser.add_argument( '-e',            dest="cf_email", help="Cloudflare email" )
-parser.add_argument( '-c',            dest="cf_config", help="Config file to load" )
-parser.add_argument( '-t', '--ttl',   dest="cf_ttl", help="Record TTL", type=int )
-parser.add_argument( '-d',            dest="cf_domain", help="Domain name", )
-parser.add_argument( '-r',            dest="cf_record", help="Record to update" )
-parser.add_argument( '-x',            dest="cf_record_type", help="Record type", choices=[ 'A', 'AAAA' ] )
-parser.add_argument( '-p', '--proxy', dest="cf_proxied", action="store_true", help="Set proxied" )
-parser.add_argument( '--dig',         dest="cf_use_dig", action="store_true" )
+# Current directory
+CURRENT_DIR = path.dirname(path.realpath(__file__))
+
+# CLI
+parser = argparse.ArgumentParser('cloudflare-ddns.py')
+parser.add_argument('-z', '--zone', dest="zone", action="append", help="Zone name")
 args = parser.parse_args()
 
-# Logging
-# ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NOTSET')
-cf_log_level = logging.INFO
+# Logger
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+ch.setFormatter(formatter)
+log.addHandler(ch)
 
-logging.basicConfig(filename=os.path.join( os.path.dirname( os.path.realpath( __file__ ) ), 'logs', 'cloudflare-ddns.log' ), level=cf_log_level, format='%(asctime)s %(levelname)s %(name)s %(message)s')
-logging.getLogger().addHandler( logging.StreamHandler() )
-logger = logging.getLogger( __name__ )
+# Cloudflare API
+API_HEADERS = {}
+API_ENDPOINT = 'https://api.cloudflare.com/client/v4/'
 
-# Cloudflare API endpoint
-CLOUDFLARE_URL = 'https://api.cloudflare.com/client/v4'
+# Cached IP addresses
+IP_ADDRESSES = {
+    4: None,
+    6: None
+}
 
-# Let's go
+# Start the client
 def main():
-    if args.cf_config:
-        config_path = os.path.join( os.path.dirname( os.path.realpath( __file__ ) ), 'configs', args.cf_config )
-        if os.path.isfile( config_path ):
 
-            # Read config file
-            with open( config_path, 'r' ) as file:
-                config = yaml.safe_load( file )
-                cf_api_key = args.cf_api_key or config.get('cf_api_key')
-                cf_email = args.cf_email or config.get('cf_email')
-                cf_domain = args.cf_domain or config.get('cf_domain')
-                cf_record = args.cf_record or config.get('cf_record')
-                cf_record_type = args.cf_record_type or config.get('cf_record_type')
-                cf_proxied = args.cf_proxied or config.get('cf_proxied') or False
-                cf_ttl = args.cf_ttl or config.get('cf_ttl')
-                cf_use_dig = args.cf_use_dig or config.get('cf_use_dig')
-        else:
-            logger.error( "Config file '{}' not found".format( config_path ) )
-            sys.exit(1)
-    else:
-        if args.cf_api_key is None:
-            logger.error( "Please specify an API key" )
-            sys.exit(1)
-        logger.warning( "You better not use the API key argument from CLI since it can be exposed to practically anyone on your system." )
-        cf_api_key = args.cf_api_key
-        if args.cf_email is None:
-            logger.error( "Please specify your Cloudflare e-mail" )
-            sys.exit(1)
-        cf_email = args.cf_email
-        if args.cf_domain is None:
-            logger.error( "Please specify your domain name" )
-            sys.exit(1)
-        cf_domain = args.cf_domain
-        if args.cf_record is None:
-            logger.error( "Please specify your record name" )
-            sys.exit(1)
-        cf_record = args.cf_record
-        cf_record_type = args.cf_record_type or 'A'
-        cf_proxied = args.cf_proxied or False
-        cf_ttl = args.cf_ttl or 1
-        cf_use_dig = args.cf_use_dig or False
+    # Preliminary checks
+    if not args.zone:
+        log.critical("Please specify a zone name")
+        return
 
-    # Validate TTL
-    if not 120 <= cf_ttl <= 2147483647 and not cf_ttl == 1:
-        logger.error( "The TTL must be between 120 and 2147483647 seconds" )
-        sys.exit(1)
+    for zone in set(args.zone):
+        config_path = path.join(CURRENT_DIR, 'zones', zone + '.yml')
+        if not path.isfile(config_path):
+            log.critical("Zone '{}' not found".format(zone))
+            return
 
-    # Authentication header
-    auth_header = {
-        'X-Auth-Key': cf_api_key,
-        'X-Auth-Email': cf_email,
+        # Read config file
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+            cf_api_key = config.get('cf_api_key')
+            cf_email = config.get('cf_email')
+            cf_zone = config.get('cf_zone')
+            cf_records = config.get('cf_records')
+            cf_resolving_method = config.get('cf_resolving_method', 'http')
+            cf_logging_level = config.get('cf_logging_level', 'INFO')
+
+        # Create API authentication headers
+        global API_HEADERS
+        API_HEADERS = {
+            'X-Auth-Key': cf_api_key,
+            'X-Auth-Email': cf_email
+        }
+
+        # Get zone informations
+        payload = {
+            'name': cf_zone
+        }
+        r = requests.get(API_ENDPOINT + 'zones', headers=API_HEADERS, params=payload)
+        data = r.json().get('result')
+        if not data:
+            log.critical("The zone '{}' was not found on your account".format(cf_zone))
+            return
+        cf_zone_uuid = data[0]['id']
+        cf_zone_name = data[0]['name']
+
+        # Logging
+        fh = logging.FileHandler(path.join(CURRENT_DIR, 'logs', cf_zone_name + '.log'))
+        fh.setFormatter(formatter)
+        log.addHandler(fh)
+
+
+        # Get (all) zone records
+        cf_zone_records = get_zone_records(cf_zone_uuid)
+
+        # Update each record
+        for records in cf_records:
+            for record_name in records:
+                local_record = records[record_name]
+
+                # Set logging
+                log_level = local_record.get('log', 'INFO')
+                fh.setLevel(logging.getLevelName(log_level))
+                ch.setLevel(logging.getLevelName(log_level))
+
+                # Format record name
+                if record_name == '@':
+                    name = cf_zone_name
+                else:
+                    name = record_name + '.' + cf_zone_name
+
+                # Try to find the record by its name and type
+                zone_record = None
+                for record in cf_zone_records:
+                    if record.get('name') == name and record.get('type') == local_record.get('type'):
+                        zone_record = record
+
+                # Update the record if found
+                if not zone_record:
+                    log.error("The record '{}' ({}) was not found".format(name, local_record.get('type')))
+                    continue
+                update_record(zone_record, local_record, cf_resolving_method)
+
+# Get all records from zone
+def get_zone_records(zone_uuid):
+    records = []
+    current_page = 0
+    total_pages = 1
+
+    # Get all records
+    while current_page != total_pages:
+        current_page += 1
+        payload = {
+            'page': current_page,
+            'per_page': 50
+        }
+        r = requests.get(API_ENDPOINT + 'zones/' + zone_uuid + '/dns_records', headers=API_HEADERS, params=payload)
+        data = r.json().get('result')
+        if not data:
+            continue
+        records.extend(data)
+
+        # Update total pages
+        data = r.json().get('result_info')
+        total_pages = data.get('total_pages', 1)
+
+    # Return all records
+    return records
+
+# Update a record
+def update_record(zone_record, local_record, resolving_method):
+    ip = get_ip(resolving_method, local_record.get('type'))
+    name = zone_record.get('name')
+    record_type = zone_record.get('type')
+    ttl = local_record.get('ttl', zone_record.get('ttl'))
+    proxied = local_record.get('proxied', zone_record.get('proxied'))
+
+    # Check if the TTL is valid
+    if proxied:
+        ttl = 1
+    elif not 120 <= ttl <= 2147483647 and not ttl == 1:
+        log.error("Skipping record '{}' ({}) because of bad TTL".format(name, record_type))
+        return
+
+    # Check if the record needs to be updated
+    if zone_record.get('content') == ip and zone_record.get('ttl') == ttl and zone_record.get('proxied') == proxied:
+        log.info("The record '{}' ({}) is already up to date".format(name, record_type))
+        return
+
+    # Update the record
+    payload = {
+        'ttl': ttl,
+        'name': name,
+        'type': record_type,
+        'content': ip,
+        'proxied': proxied
     }
+    r = requests.put(API_ENDPOINT + 'zones/' + zone_record.get('zone_id') + '/dns_records/' + zone_record.get('id'), headers=API_HEADERS, json=payload)
+    success = r.json().get('success')
+    if not success:
+        log.critical("An error occured whilst trying to update '{}' ({}) record".format(name, record_type))
+        return
+    log.info("The record '{}' ({}) has been updated successfully".format(name, record_type))
 
-    # Retrieve the public IP address
-    if cf_use_dig:
-        p = Popen([ "dig", "+short", "myip.opendns.com", cf_record_type, "@resolver1.opendns.com" ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+# Resolve the server's IP
+def get_ip(method, record_type):
+    v = (record_type == 'AAAA' and 6 or 4)
+
+    # Return cached if possible
+    if IP_ADDRESSES[v]:
+        return IP_ADDRESSES[v]
+
+    # Dig resolving method
+    if method == 'dig':
+        resolvers = {
+            4: 'resolver1.opendns.com',
+            6: 'resolver1.ipv6-sandbox.opendns.com'
+        }
+        p = Popen(['dig', '+short', 'myip.opendns.com', record_type, '@' + resolvers[v], '-{}'.format(v)], stdin=PIPE, stderr=PIPE, stdout=PIPE)
         output, err = p.communicate()
-        public_ip = output.decode().strip()
-    else:
-        if cf_record_type == 'A':
-            public_ip = requests.get( "https://ipv4.icanhazip.com", timeout=5 ).text.strip()
-        elif cf_record_type == 'AAAA':
-            public_ip = requests.get( "https://ipv6.icanhazip.com", timeout=5 ).text.strip()
+        public_ip = output.decode().rstrip()
 
-    # Retrieve the zone corresponding to the domain
-    results = get_paginated_results(
-        'GET',
-        CLOUDFLARE_URL + '/zones',
-        auth_header,
-    )
-    cf_zone_id = None
-    for zone in results:
-        zone_name = zone['name']
-        zone_id = zone['id']
-        if zone_name == cf_domain:
-            cf_zone_id = zone_id
-            break
-    if cf_zone_id is None:
-        logger.error( "Domain '{}' not found".format( cf_domain ) )
-        sys.exit(1)
+    # HTTP resolving method
+    elif method == 'http':
+        r = requests.get('https://ipv{}.icanhazip.com'.format(v))
+        public_ip = r.text.rstrip()
 
-    # Get the record corresponding to the zone
-    if cf_record == '@':
-        domain = cf_domain
-    else:
-        domain = cf_record + '.' + cf_domain
-    results = get_paginated_results(
-        'GET',
-        CLOUDFLARE_URL + '/zones/' + cf_zone_id + '/dns_records',
-        auth_header,
-    )
-    cf_record_obj = None
-    for record in results:
-        record_id = record['id']
-        record_name = record['name']
-        if record_name == domain:
-            cf_record_obj = record
-            break
-    if cf_record_obj is None:
-        logger.error( "Record '{}' not found".format( domain ) )
-        sys.exit(1)
-
-    # Update the record if needed
-    if not cf_record_obj['content'] == public_ip or not cf_record_obj['proxied'] == cf_proxied or not cf_record_obj['ttl'] == cf_ttl and not cf_record_obj['proxied']:
-        update( auth_header, cf_zone_id, cf_record_obj, public_ip, cf_ttl, cf_proxied )
-    else:
-        logger.info( "Record '{}' unchanged".format( domain ) )
-
-# Update function
-def update( auth_header, cf_zone_id, cf_record_obj, public_ip, cf_ttl, cf_proxied ):
-    cf_record_obj['content'] = public_ip
-    cf_record_obj['ttl'] = cf_ttl
-    cf_record_obj['proxied'] = cf_proxied
-    r = requests.put(
-        CLOUDFLARE_URL
-            + '/zones/'
-            + cf_zone_id
-            + '/dns_records/'
-            + cf_record_obj['id'],
-        headers=auth_header,
-        json=cf_record_obj
-    )
-    if r.status_code < 200 or r.status_code > 299:
-        logger.error( "Cloudflare responded with unintended status code: {}".format( r.status_code ) )
-        sys.exit(1)
-    else:
-        logger.info( "Record '{}' updated to IP: {}".format( cf_record_obj['name'], public_ip ) )
-
-# Get paginated results function
-def get_paginated_results( method, url, auth_header ):
-    results = []
-    page = 0
-    total_pages = None
-    while page != total_pages:
-        page += 1
-        r = requests.request(
-            method,
-            url,
-            params= { 'page': page },
-            headers = auth_header
-        )
-        if r.status_code < 200 or r.status_code > 299:
-            logger.error( "Cloudflare responded with unintended status code: {}".format( r.status_code ) )
-            sys.exit(1)
-        data = r.json()
-        results.extend( data['result'] )
-        total_pages = data['result_info']['total_pages']
-    return results
+    # Save the IP address in cache
+    IP_ADDRESSES[v] = public_ip
+    return public_ip
 
 # Main
 if __name__ == '__main__':
