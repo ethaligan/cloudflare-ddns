@@ -6,6 +6,7 @@ from sys import exit
 import logging
 import argparse
 from subprocess import Popen, PIPE
+from glob import glob
 
 # Current directory
 CURRENT_DIR = path.dirname(path.realpath(__file__))
@@ -13,6 +14,7 @@ CURRENT_DIR = path.dirname(path.realpath(__file__))
 # CLI
 parser = argparse.ArgumentParser('cloudflare-ddns.py')
 parser.add_argument('-z', '--zone', dest="zone", action="append", help="Zone name")
+parser.add_argument('-f', '--folder', dest="folder", action="append", help="Select zones folder")
 args = parser.parse_args()
 
 # Logger
@@ -38,14 +40,23 @@ IP_ADDRESSES = {
 def main():
 
     # Preliminary checks
-    if not args.zone:
-        log.critical("Please specify a zone name")
+    if not args.zone and not args.folder:
+        log.critical("Please specify a zone or folder name")
         return
 
-    for zone in set(args.zone):
-        config_path = path.join(CURRENT_DIR, 'zones', zone + '.yml')
+    config_paths = []
+    if args.zone:
+        for zone in set(args.zone):
+            config_paths += [path.join(CURRENT_DIR, 'zones', zone + '.yml')]
+
+    if args.folder:
+        for folder in set(args.folder):
+            if path.isdir(folder):
+                config_paths += glob(path.join(folder, '*.yml'))
+
+    for config_path in config_paths:
         if not path.isfile(config_path):
-            log.critical("Zone '{}' not found".format(zone))
+            log.critical("Zone '{}' not found".format(path.basename(zone)))
             return
 
         # Read config file
