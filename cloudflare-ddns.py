@@ -36,6 +36,7 @@ IP_ADDRESSES = {
     6: None
 }
 
+
 # Start the client
 def main():
 
@@ -93,7 +94,6 @@ def main():
         fh.setFormatter(formatter)
         log.addHandler(fh)
 
-
         # Get (all) zone records
         cf_zone_records = get_zone_records(cf_zone_uuid)
 
@@ -125,6 +125,7 @@ def main():
                     continue
                 update_record(zone_record, local_record, cf_resolving_method)
 
+
 # Get all records from zone
 def get_zone_records(zone_uuid):
     records = []
@@ -150,6 +151,7 @@ def get_zone_records(zone_uuid):
 
     # Return all records
     return records
+
 
 # Update a record
 def update_record(zone_record, local_record, resolving_method):
@@ -186,6 +188,7 @@ def update_record(zone_record, local_record, resolving_method):
         return
     log.info("The record '{}' ({}) has been updated successfully".format(name, record_type))
 
+
 # Resolve the server's IP
 def get_ip(method, record_type):
     v = (record_type == 'AAAA' and 6 or 4)
@@ -212,6 +215,7 @@ def get_ip(method, record_type):
     # Save the IP address in cache
     IP_ADDRESSES[v] = public_ip
     return public_ip
+
 
 # Main
 if __name__ == '__main__':
