@@ -7,12 +7,14 @@ import logging
 import argparse
 from subprocess import Popen, PIPE
 from glob import glob
+import time
 
 # CLI
 parser = argparse.ArgumentParser('cloudflare-ddns.py')
 parser.add_argument('-z', '--zone', dest="zone", action="append", help="Zone name")
 parser.add_argument('-f', '--folder', dest="folder", action="append", help="Select zones folder")
-parser.add_argument('-d', '--docker', dest="docker", action="store_true", help="Docker flag")
+parser.add_argument('-do', '--docker', dest="docker", action="store_true", help="Docker flag")
+parser.add_argument('-da', '--daemon', dest="daemon", action="store_true", help="Daemon flag")
 args = parser.parse_args()
 
 # Logger
@@ -59,6 +61,7 @@ def main():
                 config_paths += glob(path.join(folder, '*.yml'))
 
     # use every yml file
+    log.debug('{} zones found to process'.format(len(config_paths)))
     for config_path in config_paths:
         if not path.isfile(config_path):
             log.critical("Zone '{}' not found".format(path.basename(zone)))
@@ -223,4 +226,15 @@ def get_ip(method, record_type):
 
 # Main
 if __name__ == '__main__':
-    main()
+    if args.daemon:
+        log.info('#' * 39)
+        log.info('Daemon running, press "CTRL+c" to abort')
+        log.info('or stop the Docker container.')
+        log.info('#' * 39)
+        while True:
+            main()
+
+            # update ddns records every 5 minutes
+            time.sleep(5 * 60)
+    else:
+        main()
