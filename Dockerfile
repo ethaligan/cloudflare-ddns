@@ -15,4 +15,4 @@ COPY cloudflare-ddns.py .
 VOLUME /config/zones
 VOLUME /config/logs
 
-ENTRYPOINT ["python", "cloudflare-ddns.py", "--docker", "--daemon", "--folder", "/config/zones"]
+CMD ["python", "cloudflare-ddns.py", "--docker", "--daemon", "--folder", "/config/zones"]
