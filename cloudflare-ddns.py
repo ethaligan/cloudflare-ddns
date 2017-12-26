@@ -6,23 +6,24 @@ from sys import exit
 import logging
 import argparse
 from subprocess import Popen, PIPE
-
-# Current directory
-CURRENT_DIR = path.dirname(path.realpath(__file__))
+from glob import glob
+import time
 
 # CLI
 parser = argparse.ArgumentParser('cloudflare-ddns.py')
 parser.add_argument('-z', '--zone', dest="zone", action="append", help="Zone name")
+parser.add_argument('-l', '--logs', dest="logs", help="Logs folder")
+parser.add_argument('-da', '--daemon', dest="daemon", action="store_true", help="Daemon flag")
 args = parser.parse_args()
 
-# Logger
-log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
+# Logging
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 ch.setFormatter(formatter)
-log.addHandler(ch)
+LOGGER.addHandler(ch)
 
 # Cloudflare API
 API_HEADERS = {}
@@ -34,18 +35,32 @@ IP_ADDRESSES = {
     6: None
 }
 
+
 # Start the client
 def main():
-
     # Preliminary checks
     if not args.zone:
-        log.critical("Please specify a zone name")
+        LOGGER.critical("Please specify a zone or folder name")
         return
 
+    # add paths of every yml file
+    config_paths = []
     for zone in set(args.zone):
-        config_path = path.join(CURRENT_DIR, 'zones', zone + '.yml')
+        if path.isdir(zone):
+            config_paths += glob(path.join(zone, '*.yml'))
+            config_paths += glob(path.join(zone, '*.yaml'))
+
+        elif path.isfile(zone):
+            config_paths += [zone]
+
+        else:
+            LOGGER.warning("Config file not found: '{}'".format(zone))
+
+    # use every yml file
+    LOGGER.debug('{} zones found to process'.format(len(config_paths)))
+    for config_path in config_paths:
         if not path.isfile(config_path):
-            log.critical("Zone '{}' not found".format(zone))
+            LOGGER.critical("Zone '{}' not found".format(path.basename(zone)))
             return
 
         # Read config file
@@ -72,16 +87,16 @@ def main():
         r = requests.get(API_ENDPOINT + 'zones', headers=API_HEADERS, params=payload)
         data = r.json().get('result')
         if not data:
-            log.critical("The zone '{}' was not found on your account".format(cf_zone))
+            LOGGER.critical("The zone '{}' was not found on your account".format(cf_zone))
             return
         cf_zone_uuid = data[0]['id']
         cf_zone_name = data[0]['name']
 
         # Logging
-        fh = logging.FileHandler(path.join(CURRENT_DIR, 'logs', cf_zone_name + '.log'))
-        fh.setFormatter(formatter)
-        log.addHandler(fh)
-
+        if args.logs and path.isdir(args.logs):
+            fh = logging.FileHandler(path.join(args.logs, cf_zone_name + '.log'))
+            fh.setFormatter(formatter)
+            LOGGER.addHandler(fh)
 
         # Get (all) zone records
         cf_zone_records = get_zone_records(cf_zone_uuid)
@@ -91,10 +106,9 @@ def main():
             for record_name in records:
                 local_record = records[record_name]
 
-                # Set logging
+                # Set logging level
                 log_level = local_record.get('log', 'INFO')
-                fh.setLevel(logging.getLevelName(log_level))
-                ch.setLevel(logging.getLevelName(log_level))
+                LOGGER.setLevel(logging.getLevelName(log_level))
 
                 # Format record name
                 if record_name == '@':
@@ -110,9 +124,10 @@ def main():
 
                 # Update the record if found
                 if not zone_record:
-                    log.error("The record '{}' ({}) was not found".format(name, local_record.get('type')))
+                    LOGGER.error("The record '{}' ({}) was not found".format(name, local_record.get('type')))
                     continue
                 update_record(zone_record, local_record, cf_resolving_method)
+
 
 # Get all records from zone
 def get_zone_records(zone_uuid):
@@ -140,6 +155,7 @@ def get_zone_records(zone_uuid):
     # Return all records
     return records
 
+
 # Update a record
 def update_record(zone_record, local_record, resolving_method):
     ip = get_ip(resolving_method, local_record.get('type'))
@@ -152,12 +168,12 @@ def update_record(zone_record, local_record, resolving_method):
     if proxied:
         ttl = 1
     elif not 120 <= ttl <= 2147483647 and not ttl == 1:
-        log.error("Skipping record '{}' ({}) because of bad TTL".format(name, record_type))
+        LOGGER.error("Skipping record '{}' ({}) because of bad TTL".format(name, record_type))
         return
 
     # Check if the record needs to be updated
     if zone_record.get('content') == ip and zone_record.get('ttl') == ttl and zone_record.get('proxied') == proxied:
-        log.info("The record '{}' ({}) is already up to date".format(name, record_type))
+        LOGGER.info("The record '{}' ({}) is already up to date".format(name, record_type))
         return
 
     # Update the record
@@ -171,9 +187,10 @@ def update_record(zone_record, local_record, resolving_method):
     r = requests.put(API_ENDPOINT + 'zones/' + zone_record.get('zone_id') + '/dns_records/' + zone_record.get('id'), headers=API_HEADERS, json=payload)
     success = r.json().get('success')
     if not success:
-        log.critical("An error occured whilst trying to update '{}' ({}) record".format(name, record_type))
+        LOGGER.critical("An error occured whilst trying to update '{}' ({}) record".format(name, record_type))
         return
-    log.info("The record '{}' ({}) has been updated successfully".format(name, record_type))
+    LOGGER.info("The record '{}' ({}) has been updated successfully".format(name, record_type))
+
 
 # Resolve the server's IP
 def get_ip(method, record_type):
@@ -202,6 +219,22 @@ def get_ip(method, record_type):
     IP_ADDRESSES[v] = public_ip
     return public_ip
 
+
 # Main
 if __name__ == '__main__':
-    main()
+    if args.daemon:
+        LOGGER.info('#' * 39)
+        LOGGER.info('Daemon running, press "CTRL+c" to abort')
+        LOGGER.info('or stop the Docker container.')
+        LOGGER.info('#' * 39)
+        while True:
+            try:
+                main()
+
+            except Exception as e:
+                LOGGER.exception(e)
+
+            # update ddns records every 5 minutes
+            time.sleep(5 * 60)
+    else:
+        main()
