@@ -31,5 +31,5 @@ cf_records:
 
 # This is the method used to discover the server's IP address
 # The faster one is 'dig' but it may not be available on your system
-# Available methods: 'http' or 'dig'
+# Available methods: 'http', 'dig', or 'interface'
 cf_resolving_method: 'http'
