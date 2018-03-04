@@ -5,6 +5,7 @@ from os import path
 from sys import exit
 import logging
 import argparse
+import socket
 from subprocess import Popen, PIPE
 
 # Current directory
@@ -197,6 +198,16 @@ def get_ip(method, record_type):
     elif method == 'http':
         r = requests.get('https://ipv{}.icanhazip.com'.format(v))
         public_ip = r.text.rstrip()
+
+    # Interface resolving method
+    elif method == 'interface':
+        google_public_dns = {
+            4: '8.8.8.8',
+            6: '2001:4860:4860::8888',
+        }
+        with socket.socket(socket.AF_INET if v == 4 else socket.AF_INET6, socket.SOCK_DGRAM) as s:
+            s.connect((google_public_dns[v], 80))
+            public_ip = s.getsockname()[0]
 
     # Save the IP address in cache
     IP_ADDRESSES[v] = public_ip

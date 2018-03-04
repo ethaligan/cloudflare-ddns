@@ -14,9 +14,10 @@ You'll need a [Python](https://www.python.org/downloads/) interpreter and the fo
 You can install them with `pip`: `pip install -r requirements.txt`
 	
 ## Features
-  - Two ways to grab your IP address
+  - Three ways to grab your IP address
   	- HTTP 
 	- DNS lookup (dig)
+	- Interface (get IP address from public interface directly)
   - IPv4 and IPv6 support (A and AAAA records)
   - Logging
   - One configuration file for multiple records
