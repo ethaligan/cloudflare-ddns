@@ -61,8 +61,7 @@ def main():
         # Create API authentication headers
         global API_HEADERS
         API_HEADERS = {
-            'X-Auth-Key': cf_api_key,
-            'X-Auth-Email': cf_email
+            '"Authorization': "Bearer " + cf_api_key
         }
 
         # Get zone informations
